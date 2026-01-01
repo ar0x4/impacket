@@ -43,12 +43,48 @@ from impacket.krb5.gssapi import KRB5_AP_REQ
 from impacket import nt_errors, LOG
 from impacket.krb5.ccache import CCache
 
+# Import evasion module for profile-based configuration
+try:
+    from impacket import evasion
+    EVASION_AVAILABLE = True
+except ImportError:
+    EVASION_AVAILABLE = False
+
 # Our random number generator
 try:
     rand = random.SystemRandom()
 except NotImplementedError:
     rand = random
     pass
+
+def _get_kdc_options_from_profile(request_type='AS_REQ'):
+    """Get KDC options based on evasion profile"""
+    if not EVASION_AVAILABLE:
+        return None
+    profile = evasion.get_profile()
+    if request_type == 'AS_REQ':
+        flags = profile.KRB_AS_REQ_FLAGS
+    else:  # TGS_REQ
+        flags = profile.KRB_TGS_REQ_FLAGS
+
+    opts = []
+    for flag_name in flags:
+        flag_val = getattr(constants.KDCOptions, flag_name, None)
+        if flag_val:
+            opts.append(flag_val.value)
+    return opts
+
+def _get_nonce_from_profile():
+    """Get nonce with profile-configured bit size"""
+    if EVASION_AVAILABLE:
+        return evasion.get_kerberos_nonce()
+    return rand.getrandbits(31)
+
+def _get_validity_delta_from_profile():
+    """Get ticket validity timedelta from profile"""
+    if EVASION_AVAILABLE:
+        return evasion.get_kerberos_validity_delta()
+    return datetime.timedelta(days=1)
 
 def sendReceive(data, host, kdcHost, port=88):
     if kdcHost is None:
@@ -141,10 +177,15 @@ def getKerberosTGT(clientName, password, domain, lmhash, nthash, aesKey='', kdcH
 
     reqBody = seq_set(asReq, 'req-body')
 
-    opts = list()
-    opts.append( constants.KDCOptions.forwardable.value )
-    opts.append( constants.KDCOptions.renewable.value )
-    opts.append( constants.KDCOptions.proxiable.value )
+    # Use profile-based KDC options if available
+    profile_opts = _get_kdc_options_from_profile('AS_REQ')
+    if profile_opts:
+        opts = profile_opts
+    else:
+        opts = list()
+        opts.append( constants.KDCOptions.forwardable.value )
+        opts.append( constants.KDCOptions.renewable.value )
+        opts.append( constants.KDCOptions.proxiable.value )
     reqBody['kdc-options']  = constants.encodeFlags(opts)
 
     seq_set(reqBody, 'sname', serverName.components_to_asn1)
@@ -155,10 +196,12 @@ def getKerberosTGT(clientName, password, domain, lmhash, nthash, aesKey='', kdcH
 
     reqBody['realm'] = domain
 
-    now = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)
+    # Use profile-based validity period and nonce
+    validity_delta = _get_validity_delta_from_profile()
+    now = datetime.datetime.now(datetime.timezone.utc) + validity_delta
     reqBody['till'] = KerberosTime.to_asn1(now)
     reqBody['rtime'] = KerberosTime.to_asn1(now)
-    reqBody['nonce'] =  rand.getrandbits(31)
+    reqBody['nonce'] = _get_nonce_from_profile()
 
     # Yes.. this shouldn't happen but it's inherited from the past
     if aesKey is None:
@@ -301,10 +344,15 @@ def getKerberosTGT(clientName, password, domain, lmhash, nthash, aesKey='', kdcH
 
         reqBody = seq_set(asReq, 'req-body')
 
-        opts = list()
-        opts.append( constants.KDCOptions.forwardable.value )
-        opts.append( constants.KDCOptions.renewable.value )
-        opts.append( constants.KDCOptions.proxiable.value )
+        # Use profile-based KDC options if available
+        profile_opts = _get_kdc_options_from_profile('AS_REQ')
+        if profile_opts:
+            opts = profile_opts
+        else:
+            opts = list()
+            opts.append( constants.KDCOptions.forwardable.value )
+            opts.append( constants.KDCOptions.renewable.value )
+            opts.append( constants.KDCOptions.proxiable.value )
         reqBody['kdc-options'] = constants.encodeFlags(opts)
 
         seq_set(reqBody, 'sname', serverName.components_to_asn1)
@@ -312,10 +360,12 @@ def getKerberosTGT(clientName, password, domain, lmhash, nthash, aesKey='', kdcH
 
         reqBody['realm'] =  domain
 
-        now = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)
+        # Use profile-based validity period and nonce
+        validity_delta = _get_validity_delta_from_profile()
+        now = datetime.datetime.now(datetime.timezone.utc) + validity_delta
         reqBody['till'] = KerberosTime.to_asn1(now)
         reqBody['rtime'] =  KerberosTime.to_asn1(now)
-        reqBody['nonce'] = rand.getrandbits(31)
+        reqBody['nonce'] = _get_nonce_from_profile()
 
         seq_set_iter(reqBody, 'etype', ( (int(cipher.enctype),)))
 
@@ -425,11 +475,16 @@ def getKerberosTGS(serverName, domain, kdcHost, tgt, cipher, sessionKey, renew =
 
     reqBody = seq_set(tgsReq, 'req-body')
 
-    opts = list()
-    opts.append( constants.KDCOptions.forwardable.value )
-    opts.append( constants.KDCOptions.renewable.value )
-    opts.append( constants.KDCOptions.renewable_ok.value )
-    opts.append( constants.KDCOptions.canonicalize.value )
+    # Use profile-based KDC options for TGS-REQ
+    profile_opts = _get_kdc_options_from_profile('TGS_REQ')
+    if profile_opts:
+        opts = profile_opts
+    else:
+        opts = list()
+        opts.append( constants.KDCOptions.forwardable.value )
+        opts.append( constants.KDCOptions.renewable.value )
+        opts.append( constants.KDCOptions.renewable_ok.value )
+        opts.append( constants.KDCOptions.canonicalize.value )
 
     if renew == True:
         opts.append( constants.KDCOptions.renew.value )
@@ -438,18 +493,34 @@ def getKerberosTGS(serverName, domain, kdcHost, tgt, cipher, sessionKey, renew =
     seq_set(reqBody, 'sname', serverName.components_to_asn1)
     reqBody['realm'] = domain
 
-    now = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)
+    # Use profile-based validity period and nonce
+    validity_delta = _get_validity_delta_from_profile()
+    now = datetime.datetime.now(datetime.timezone.utc) + validity_delta
 
     reqBody['till'] = KerberosTime.to_asn1(now)
-    reqBody['nonce'] = rand.getrandbits(31)
-    seq_set_iter(reqBody, 'etype',
-                      (
-                          int(constants.EncryptionTypes.rc4_hmac.value),
-                          int(constants.EncryptionTypes.des3_cbc_sha1_kd.value),
-                          int(constants.EncryptionTypes.des_cbc_md5.value),
-                          int(cipher.enctype)
-                       )
-                )
+    reqBody['nonce'] = _get_nonce_from_profile()
+
+    # Use profile-based encryption type order
+    if EVASION_AVAILABLE:
+        profile = evasion.get_profile()
+        etype_list = []
+        for etype_name in profile.KRB_TGS_ETYPE_ORDER:
+            etype_val = getattr(constants.EncryptionTypes, etype_name, None)
+            if etype_val:
+                etype_list.append(int(etype_val.value))
+        # Add current cipher enctype if not already in list
+        if int(cipher.enctype) not in etype_list:
+            etype_list.append(int(cipher.enctype))
+        seq_set_iter(reqBody, 'etype', tuple(etype_list))
+    else:
+        seq_set_iter(reqBody, 'etype',
+                          (
+                              int(constants.EncryptionTypes.rc4_hmac.value),
+                              int(constants.EncryptionTypes.des3_cbc_sha1_kd.value),
+                              int(constants.EncryptionTypes.des_cbc_md5.value),
+                              int(cipher.enctype)
+                           )
+                    )
 
     message = encoder.encode(tgsReq)
 

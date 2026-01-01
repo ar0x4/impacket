@@ -24,6 +24,13 @@ from six import b
 from impacket.structure import Structure
 from impacket import LOG
 
+# Import evasion module for profile-based configuration
+try:
+    from impacket import evasion
+    EVASION_AVAILABLE = True
+except ImportError:
+    EVASION_AVAILABLE = False
+
 
 # This is important. NTLMv2 is not negotiated by the client or server. 
 # It is used if set locally on both sides. Change this item if you don't want to use 
@@ -278,6 +285,19 @@ class VERSION(Structure):
         ('Reserved', '3s=""'),
         ('NTLMRevisionCurrent', '<B=self.NTLMSSP_REVISION_W2K3'),
     )
+
+    @staticmethod
+    def from_profile():
+        """Create VERSION structure from active evasion profile"""
+        if EVASION_AVAILABLE:
+            profile = evasion.get_profile()
+            ver = VERSION()
+            ver['ProductMajorVersion'] = profile.NTLM_PRODUCT_MAJOR_VERSION
+            ver['ProductMinorVersion'] = profile.NTLM_PRODUCT_MINOR_VERSION
+            ver['ProductBuild'] = profile.NTLM_PRODUCT_BUILD
+            ver['NTLMRevisionCurrent'] = profile.NTLM_REVISION
+            return ver
+        return VERSION()
 
 class NTLMAuthNegotiate(Structure):
 
@@ -587,11 +607,22 @@ def ntlmssp_DES_encrypt(key, challenge):
 
 # High level functions to use NTLMSSP
 
-def getNTLMSSPType1(workstation='', domain='', signingRequired = False, use_ntlmv2 = USE_NTLMv2, version = None):
+def getNTLMSSPType1(workstation='', domain='', signingRequired = False, use_ntlmv2 = USE_NTLMv2, version = None, use_evasion_profile = True):
     # Let's do some encoding checks before moving on. Kind of dirty, but found effective when dealing with
     # international characters.
     import sys
     encoding = sys.getfilesystemencoding()
+
+    # Apply evasion profile settings if enabled
+    if use_evasion_profile and EVASION_AVAILABLE:
+        profile = evasion.get_profile()
+        # Generate workstation name if profile wants it and none provided
+        if profile.NTLM_INCLUDE_WORKSTATION and not workstation:
+            workstation = evasion.generate_workstation_name(profile.NTLM_WORKSTATION_PREFIX)
+        # Use profile version if none specified
+        if version is None and profile.NTLM_PRODUCT_BUILD > 0:
+            version = VERSION.from_profile()
+
     if encoding is not None:
         try:
             workstation.encode('utf-16le')
@@ -623,7 +654,7 @@ def getNTLMSSPType1(workstation='', domain='', signingRequired = False, use_ntlm
 
     return auth
 
-def getNTLMSSPType3(type1, type2, user, password, domain, lmhash = '', nthash = '', use_ntlmv2 = USE_NTLMv2, channel_binding_value = b'', service='cifs', version=None):
+def getNTLMSSPType3(type1, type2, user, password, domain, lmhash = '', nthash = '', use_ntlmv2 = USE_NTLMv2, channel_binding_value = b'', service='cifs', version=None, use_evasion_profile = True):
 
     # Safety check in case somebody sent password = None.. That's not allowed. Setting it to '' and hope for the best.
     if password is None:
@@ -652,11 +683,15 @@ def getNTLMSSPType3(type1, type2, user, password, domain, lmhash = '', nthash = 
     # Let's start with the original flags sent in the type1 message
     responseFlags = type1['flags']
 
-    # Token received and parsed. Depending on the authentication 
+    # Token received and parsed. Depending on the authentication
     # method we will create a valid ChallengeResponse
     ntlmChallengeResponse = NTLMAuthChallengeResponse(user, password, ntlmChallenge['challenge'])
 
-    clientChallenge = b("".join([random.choice(string.digits+string.ascii_letters) for _ in range(8)]))
+    # Generate client challenge - use secure random if evasion profile is active
+    if use_evasion_profile and EVASION_AVAILABLE:
+        clientChallenge = evasion.get_ntlm_challenge()
+    else:
+        clientChallenge = b("".join([random.choice(string.digits+string.ascii_letters) for _ in range(8)]))
 
     serverName = ntlmChallenge['TargetInfoFields']
 
@@ -693,9 +728,12 @@ def getNTLMSSPType3(type1, type2, user, password, domain, lmhash = '', nthash = 
 
     # If we set up key exchange, let's fill the right variables
     if ntlmChallenge['flags'] & NTLMSSP_NEGOTIATE_KEY_EXCH:
-       # not exactly what I call random tho :\
        # exportedSessionKey = this is the key we should use to sign
-       exportedSessionKey = b("".join([random.choice(string.digits+string.ascii_letters) for _ in range(16)]))
+       # Use secure random if evasion profile is active
+       if use_evasion_profile and EVASION_AVAILABLE:
+           exportedSessionKey = evasion.generate_secure_random_bytes(16)
+       else:
+           exportedSessionKey = b("".join([random.choice(string.digits+string.ascii_letters) for _ in range(16)]))
        #exportedSessionKey = "A"*16
        #print "keyExchangeKey %r" % keyExchangeKey
        # Let's generate the right session key based on the challenge flags

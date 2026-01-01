@@ -36,6 +36,13 @@ from impacket.dcerpc.v5.ndr import NDRSTRUCT
 from impacket import hresult_errors
 from threading import Thread
 
+# Evasion profile support - optional
+try:
+    from impacket import evasion
+    EVASION_AVAILABLE = True
+except ImportError:
+    EVASION_AVAILABLE = False
+
 # MS/RPC Constants
 MSRPC_REQUEST   = 0x00
 MSRPC_PING      = 0x01
@@ -1164,8 +1171,13 @@ class MSRPCBind(Structure):
     def __init__(self, data=None, alignment=0):
         Structure.__init__(self, data, alignment)
         if data is None:
-            self['max_tfrag'] = 4280
-            self['max_rfrag'] = 4280
+            # Use profile-based fragment size if evasion is available
+            if EVASION_AVAILABLE:
+                frag_size = evasion.get_rpc_max_fragment_size()
+            else:
+                frag_size = 4280
+            self['max_tfrag'] = frag_size
+            self['max_rfrag'] = frag_size
             self['assoc_group'] = 0
             self['ctx_num'] = 1
             self['ctx_items'] = b''
@@ -1203,8 +1215,13 @@ class MSRPCRelayBind(Structure):
     def __init__(self, data = None, alignment = 0):
         Structure.__init__(self, data, alignment)
         if data is None:
-            self['max_tfrag'] = 4280
-            self['max_rfrag'] = 4280
+            # Use profile-based fragment size if evasion is available
+            if EVASION_AVAILABLE:
+                frag_size = evasion.get_rpc_max_fragment_size()
+            else:
+                frag_size = 4280
+            self['max_tfrag'] = frag_size
+            self['max_rfrag'] = frag_size
             self['assoc_group'] = 0
             self['ctx_num'] = 1
             self['ctx_items'] = b''
@@ -1216,7 +1233,7 @@ class MSRPCRelayBind(Structure):
 
     def addCtxItem(self, item):
         self.__ctx_items.append(item)
-    
+
     def getCtxItems(self):
         return self.__ctx_items
 
@@ -1468,7 +1485,11 @@ class DCERPC_v5(DCERPC):
         self.__sequence = 0   
 
         self.transfer_syntax = uuidtup_to_bin(('8a885d04-1ceb-11c9-9fe8-08002b104860', '2.0'))
-        self.__callid = 1
+        # Use profile-based initial call ID if evasion is available
+        if EVASION_AVAILABLE:
+            self.__callid = evasion.get_rpc_initial_call_id()
+        else:
+            self.__callid = 1
         self._ctx = 0
         self.__sessionKey = None
         self.__max_xmit_size  = 0
@@ -1578,7 +1599,11 @@ class DCERPC_v5(DCERPC):
             sec_trailer = SEC_TRAILER()
             sec_trailer['auth_type']   = self.__auth_type
             sec_trailer['auth_level']  = self.__auth_level
-            sec_trailer['auth_ctx_id'] = self._ctx + 79231 
+            # Use profile-based auth context ID if evasion is available
+            if EVASION_AVAILABLE:
+                sec_trailer['auth_ctx_id'] = evasion.get_rpc_auth_ctx_id(self._ctx)
+            else:
+                sec_trailer['auth_ctx_id'] = self._ctx + 79231
 
             pad = (4 - (len(packet.get_packet()) % 4)) % 4
             if pad != 0:
@@ -1680,7 +1705,11 @@ class DCERPC_v5(DCERPC):
             sec_trailer = SEC_TRAILER()
             sec_trailer['auth_type'] = self.__auth_type
             sec_trailer['auth_level'] = self.__auth_level
-            sec_trailer['auth_ctx_id'] = self._ctx + 79231 
+            # Use profile-based auth context ID if evasion is available
+            if EVASION_AVAILABLE:
+                sec_trailer['auth_ctx_id'] = evasion.get_rpc_auth_ctx_id(self._ctx)
+            else:
+                sec_trailer['auth_ctx_id'] = self._ctx + 79231
 
             if response is not None:
                 if self.__auth_type == RPC_C_AUTHN_GSS_NEGOTIATE:
@@ -1725,7 +1754,11 @@ class DCERPC_v5(DCERPC):
             sec_trailer['auth_type'] = self.__auth_type
             sec_trailer['auth_level'] = self.__auth_level
             sec_trailer['auth_pad_len'] = 0
-            sec_trailer['auth_ctx_id'] = self._ctx + 79231 
+            # Use profile-based auth context ID if evasion is available
+            if EVASION_AVAILABLE:
+                sec_trailer['auth_ctx_id'] = evasion.get_rpc_auth_ctx_id(self._ctx)
+            else:
+                sec_trailer['auth_ctx_id'] = self._ctx + 79231
 
             pad = (4 - (len(rpc_packet.get_packet()) % 4)) % 4
             if pad != 0:
@@ -2047,13 +2080,19 @@ class DCERPCServer(Thread):
     """
     #constructor to use with rpcrelayserver
     def __init__(self, client_socket=None):
+        # Use profile-based fragment size if evasion is available
+        if EVASION_AVAILABLE:
+            frag_size = evasion.get_rpc_max_fragment_size()
+        else:
+            frag_size = 4280
+
         if client_socket:
             self._clientSock = client_socket
             self._listenUUIDS = {}
             self._boundUUID = b''
             self._callid = 1
             self._max_frag = None
-            self._max_xmit_size = 4280
+            self._max_xmit_size = frag_size
             self.__log = LOG
         else:
             Thread.__init__(self)
@@ -2065,7 +2104,7 @@ class DCERPCServer(Thread):
             self._clientSock    = None
             self._callid        = 1
             self._max_frag       = None
-            self._max_xmit_size = 4280
+            self._max_xmit_size = frag_size
             self.__log = LOG
             self._sock = socket.socket()
             self._sock.bind((self._listenAddress,self._listenPort))

@@ -51,6 +51,12 @@ from impacket.nt_errors import STATUS_SUCCESS, STATUS_MORE_PROCESSING_REQUIRED, 
 from impacket.spnego import SPNEGO_NegTokenInit, TypesMech, SPNEGO_NegTokenResp, ASN1_OID, asn1encode, ASN1_AID
 from impacket.krb5.gssapi import KRB5_AP_REQ
 
+# Import evasion module for profile-based configuration
+try:
+    from impacket import evasion
+    EVASION_AVAILABLE = True
+except ImportError:
+    EVASION_AVAILABLE = False
 
 # For signing
 import hashlib, hmac, copy
@@ -194,7 +200,11 @@ class SMB3:
         self.RequireMessageSigning = False    #
         self.ConnectionTable = {}
         self.GlobalFileTable = {}
-        self.ClientGuid = ''.join([random.choice(string.ascii_letters) for i in range(16)])
+        # Use profile-based ClientGuid generation
+        if EVASION_AVAILABLE:
+            self.ClientGuid = evasion.get_smb_client_guid()
+        else:
+            self.ClientGuid = ''.join([random.choice(string.ascii_letters) for i in range(16)])
         # Only for SMB 3.0
         self.EncryptionAlgorithmList = ['AES-CCM']
         self.MaxDialect = []
@@ -487,7 +497,11 @@ class SMB3:
         if (self._Session['SessionFlags'] & SMB2_SESSION_FLAG_ENCRYPT_DATA) or ( packet['TreeID'] != 0 and self._Session['TreeConnectTable'][packet['TreeID']]['EncryptData'] is True):
             plainText = packet.getData()
             transformHeader = SMB2_TRANSFORM_HEADER()
-            transformHeader['Nonce'] = ''.join([rand.choice(string.ascii_letters) for _ in range(11)])
+            # Use profile-based secure random for encryption nonce
+            if EVASION_AVAILABLE:
+                transformHeader['Nonce'] = evasion.get_smb_nonce(11)
+            else:
+                transformHeader['Nonce'] = ''.join([rand.choice(string.ascii_letters) for _ in range(11)])
             transformHeader['OriginalMessageSize'] = len(plainText)
             transformHeader['EncryptionAlgorithm'] = SMB2_ENCRYPTION_AES128_CCM
             transformHeader['SessionID'] = self._Session['SessionID']
@@ -559,10 +573,16 @@ class SMB3:
 
     def negotiateSession(self, preferredDialect = None, negSessionResponse = None):
         # Let's store some data for later use
-        self._Connection['ClientSecurityMode'] = SMB2_NEGOTIATE_SIGNING_ENABLED
-        if self.RequireMessageSigning is True:
-            self._Connection['ClientSecurityMode'] |= SMB2_NEGOTIATE_SIGNING_REQUIRED
-        self._Connection['Capabilities'] = SMB2_GLOBAL_CAP_ENCRYPTION
+        # Use profile-based security mode and capabilities
+        if EVASION_AVAILABLE:
+            profile = evasion.get_profile()
+            self._Connection['ClientSecurityMode'] = profile.SMB_SECURITY_MODE
+            self._Connection['Capabilities'] = profile.SMB_CAPABILITIES
+        else:
+            self._Connection['ClientSecurityMode'] = SMB2_NEGOTIATE_SIGNING_ENABLED
+            if self.RequireMessageSigning is True:
+                self._Connection['ClientSecurityMode'] |= SMB2_NEGOTIATE_SIGNING_REQUIRED
+            self._Connection['Capabilities'] = SMB2_GLOBAL_CAP_ENCRYPTION
         currentDialect = SMB2_DIALECT_WILDCARD
 
         # Do we have a negSessionPacket already?
@@ -597,8 +617,13 @@ class SMB3:
                     preAuthIntegrityCapabilities['HashAlgorithmCount'] = 1
                     preAuthIntegrityCapabilities['SaltLength'] = 32
                     preAuthIntegrityCapabilities['HashAlgorithms'] = b'\x01\x00'
-                    preAuthIntegrityCapabilities['Salt'] = ''.join([rand.choice(string.ascii_letters) for _ in
-                                                                     range(preAuthIntegrityCapabilities['SaltLength'])])
+                    # Use profile-based secure random for salt
+                    if EVASION_AVAILABLE:
+                        preAuthIntegrityCapabilities['Salt'] = evasion.generate_secure_random_bytes(
+                            preAuthIntegrityCapabilities['SaltLength'])
+                    else:
+                        preAuthIntegrityCapabilities['Salt'] = ''.join([rand.choice(string.ascii_letters) for _ in
+                                                                         range(preAuthIntegrityCapabilities['SaltLength'])])
 
                     negotiateContext['Data'] = preAuthIntegrityCapabilities.getData()
                     negotiateContext['DataLength'] = len(negotiateContext['Data'])
@@ -630,7 +655,11 @@ class SMB3:
                     #self._Connection['SupportsEncryption'] = True
 
             else:
-                negSession['Dialects'] = [SMB2_DIALECT_002, SMB2_DIALECT_21, SMB2_DIALECT_30]
+                # Use profile-based dialect list
+                if EVASION_AVAILABLE and evasion.get_profile().SMB_INCLUDE_311:
+                    negSession['Dialects'] = [SMB2_DIALECT_002, SMB2_DIALECT_21, SMB2_DIALECT_30, SMB2_DIALECT_311]
+                else:
+                    negSession['Dialects'] = [SMB2_DIALECT_002, SMB2_DIALECT_21, SMB2_DIALECT_30]
             negSession['DialectCount'] = len(negSession['Dialects'])
             packet['Data'] = negSession
 
